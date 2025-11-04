@@ -15,8 +15,7 @@ library(sf)
 ??yaps
 
 #load in data
-setwd('E:/FIU/PostDoc/CESI/Final_report/YAPS/')
-data <- read.table('Rankin_pos.txt', sep = ',', header = T)
+data <- read.table('Data/Rankin_pos.txt', sep = ',', header = T)
 write.csv(data, file = 'Trout_positions_Rankin.csv')
 
 head(data)
@@ -125,7 +124,9 @@ str(dat_20)
 
 dat_10$ts1 <- as.POSIXct(dat_10$ts, format='%Y-%m-%dT%H:%M:%OS', tz='America/New_York', origin = '1970-01-01 00:00:00')
 
-dat_10t <- dat_10 %>% group_by(tag) %>% mutate(trackstart = ifelse(as.numeric(unclass(ts1)-unclass(lag(ts1))) > 3600, 'Y', 'N')) %>% ungroup()
+
+
+dat_10t <- dat %>% group_by(tag) %>% mutate(trackstart = ifelse(as.numeric(unclass(ts1)-unclass(lag(ts1))) > 3600, 'Y', 'N')) %>% ungroup()
 dat_10t[is.na(dat_10t)] <- 'Y'
 
 str(dat_10t)
@@ -144,6 +145,31 @@ tracknum1 <- function(x){
 }
 
 dat_10ttt <- dat_10tt %>% group_by(tag) %>% group_modify(~tracknum1(.x)) %>% ungroup()
+
+#30 second tags
+dat20 <- dat_10 %>%  dplyr::filter(tag %in% c(34501,34507,34509,34510,34518)) %>% dplyr::filter(nobs >= 2)
+
+dat20t <- dat20 %>% group_by(tag) %>% mutate(trackstart = ifelse(as.numeric(unclass(ts1)-unclass(lag(ts1))) > 300, 'Y', 'N')) %>% ungroup()
+dat20t[is.na(dat20t)] <- 'Y'
+
+str(dat20t)
+
+dat20tt <- dat20t %>% group_by(tag) %>% mutate(track = ifelse(row_number() == 1, 1, NA)) %>% ungroup()
+
+tracknum1 <- function(x){
+  for (i in 2:nrow(x)){
+    if (x$trackstart[i] == 'Y'){
+      x$track[i] <- x$track[i-1]+1
+    } else {
+      x$track[i] <- x$track[i-1]
+    }
+  }
+  x
+}
+
+dat20ttt <- dat20tt %>% group_by(tag) %>% group_modify(~tracknum1(.x)) %>% ungroup()
+
+write.csv(dat20ttt, file = 'Data/Rankin_30s_hmmdat.csv')
 
 #Add step length and turn angle
 dat_10ang <- dat_10ttt %>% group_by(tag, track) %>% mutate(step_length = sqrt((x - lag(x, default = NA))^2 + (y - lag(y, default = NA))^2), bear = atan2(
