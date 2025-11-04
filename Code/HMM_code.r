@@ -25,7 +25,7 @@ glimpse(dat)
 
 # Parse timestamp
 dat <- dat %>%
-  mutate(ts = as.POSIXct(.data[[ts_col]],
+  mutate(ts = as.POSIXct(.data[[ts]],
                          format = "%Y-%m-%d %H:%M:%OS",
                          tz = "UTC"))
 
@@ -72,7 +72,7 @@ unique(dat$tag)
 #group by 20-40 second tags and 60-90 second tags 
 dat_20 <- dat %>% dplyr::filter(tag %in% c(34497,34499,34501,34502,34505,34507,34508,34509,34510,34513,34514,34518))
 dat_60 <- dat %>% dplyr::filter(tag %in% c(854,871,875,880,881,904,912,47421))
-
+str(dat_20)
 ##First look at YAPS tags (20-40 second random delay)
 # Apply interpolation grouped by ID and track per time delay of tag
 interp_list_20 <- dat_20 %>%
@@ -110,33 +110,35 @@ hmm_data_20 <- hmm_data_20 %>%
     step = pmin(step, quantile(step, 0.99, na.rm = TRUE))
   )
 
+hmm_data_20 <- hmm_data_20  %>% group_by(ID) %>% dplyr::filter(n()>= 3) %>% ungroup()
+
+hmm_data_20 <- prepData(hmm_data_20, type = "UTM", coordNames = c("x", "y"))
 
 summary(hmm_data_20$step)
 summary(hmm_data_20$angle)
 hist(hmm_data_20$step, breaks = 20, freq = F, main = "Step lengths")
-curve(dgamma(x,0.8,rate=1), n=200, add=TRUE, col="royalblue", lwd=4)
-curve(dgamma(x,1.75,rate=1), n=200, add=TRUE, col="cadetblue", lwd=4)
+curve(dgamma(x,0.5,rate=1), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(dgamma(x,2,rate=0.5), n=200, add=TRUE, col="cadetblue", lwd=4)
 #curve(dgamma(x,1.2,rate=0.02), n=200, add=TRUE, col="navyblue", lwd=4)
 hist(hmm_data_20$angle, breaks = 30, freq = F, main = "Turn angles")
-curve(circular::dvonmises(x,pi,0.5), n=200, add=TRUE, col="royalblue", lwd=4)
-curve(circular::dvonmises(x,0,7.5), n=200, add=TRUE, col="cadetblue", lwd=4)
+curve(circular::dvonmises(x,pi,0.1), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(circular::dvonmises(x,0,20), n=200, add=TRUE, col="cadetblue", lwd=4)
 
 
 #4) fit HMMs!
 #look at histograms and get numbers
-sl_init_mean <- c(1.75/1, 0.8/1)
-sl_init_sd <- c(sqrt(1.75)/1, sqrt(0.8)/1)
+sl_init_mean <- c(2/0.5, 0.5/1)
+sl_init_sd <- c(sqrt(2)/0.5, sqrt(0.5)/1)
 ta_init_mean <- c(0, pi)
-ta_init_con <- c(7.5, 0.5)
+ta_init_con <- c(20, 0.1)
 
 mod <- fitHMM(data = hmm_data_20,
               nbStates = 2,
               stepPar0 = c(sl_init_mean, sl_init_sd),
               anglePar0 = c(ta_init_mean, ta_init_con),
-              formula = ~1,
-              stepDist = "gamma",
-              angleDist = "vm")
+              formula = ~1)
 
+mod
 plot(mod)
 CI(mod)
 plot(mbest)
@@ -148,33 +150,33 @@ data.frame(val = rle(states)$values, n = rle(states)$lengths) %>%
   ggplot(aes(val %>% factor, n)) + geom_violin()
 mod %>% plotPR()
 
-
+viterbi
 
 #we are going to try to fit a bunch of models, both with 2 and 3 states. We will do this with different starting values in parallel to maximize model
 ncores <- detectCores()-1
 cl <- makeCluster(getOption('cl.cores', ncores))
-clusterExport(cl, list('hmm_data', 'fitHMM'))
+clusterExport(cl, list('hmm_data_20', 'fitHMM'))
 
 #number of tries with different starting values
 niter <- 25
-set.seed(1919)
+set.seed(19)
 
 # Create list of starting values
 allPar0 <- lapply(as.list(1:niter), function(x) {
   # Step length mean
   stepMean0 <- runif(2,
-                     min = c(0.5, 3),
-                     max = c(1.5, 5))
+                     min = c(0.25, 2),
+                     max = c(1, 3.5))
   # Step length standard deviation
   stepSD0 <- runif(2,
-                   min = c(0.5, 3),
-                   max = c(1.5, 5))
+                   min = c(0.25, 1),
+                   max = c(0.75, 2))
   # Turning angle mean
   angleMean0 <- c(pi, 0)
   # Turning angle concentration
   angleCon0 <- runif(2,
-                     min = c(0.5, 5),
-                     max = c(1.5, 10))
+                     min = c(0.5, 2),
+                     max = c(1, 8))
   # Return vectors of starting values
   stepPar0 <- c(stepMean0, stepSD0)
   anglePar0 <- c(angleMean0, angleCon0)
@@ -183,7 +185,7 @@ allPar0 <- lapply(as.list(1:niter), function(x) {
 
 # Fit the niter models in parallel
 allm_parallel <- parLapply(cl = cl, X = allPar0, fun = function(par0) {
-  m <- fitHMM(data = hmm_data, nbStates = 2, stepPar0 = par0$step,
+  m <- fitHMM(data = hmm_data_20, nbStates = 2, stepPar0 = par0$step,
               anglePar0 = par0$angle)
   return(m)
 })
