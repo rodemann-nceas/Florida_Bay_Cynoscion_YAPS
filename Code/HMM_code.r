@@ -294,3 +294,179 @@ output_df <- state_20 %>%
   dplyr::select(ID, track, tag, ts, x, y, step, angle, angle_deg, state)
 
 write_csv(output_df, "Results/interpolated_hmm_states_Rankin_20.csv")
+
+#That was Rankin 20-40 second. Let's try Johnson now w/ 20-40 second
+
+jdat <- data <- read.table('Data/2024-03-18_Rodemann_yaps_johnson.txt', sep = ',', header = T)
+jdat <- jdat %>% filter(E < 10)
+unique(jdat$tag)
+str(jdat)
+#anything over 10474 is 20-40 second! Let's subset and redo the tracks
+
+jdat_20 <- jdat %>% dplyr::filter(tag >= 10474)
+head(jdat_20)
+
+jdat_20$ts <- as.POSIXct(jdat_20$ts, format = '%Y-%m-%dT%H:%M:%OS')
+
+jdat20 <- jdat_20  %>% dplyr::filter(nobs >= 2)
+
+jdat20t <- jdat20 %>% group_by(tag) %>% mutate(trackstart = ifelse(as.numeric(unclass(ts)-unclass(lag(ts))) > 300, 'Y', 'N')) %>% ungroup()
+jdat20t[is.na(jdat20t)] <- 'Y'
+
+str(jdat20t)
+
+jdat20tt <- jdat20t %>% group_by(tag) %>% mutate(track = ifelse(row_number() == 1, 1, NA)) %>% ungroup()
+
+tracknum1 <- function(x){
+  for (i in 2:nrow(x)){
+    if (x$trackstart[i] == 'Y'){
+      x$track[i] <- x$track[i-1]+1
+    } else {
+      x$track[i] <- x$track[i-1]
+    }
+  }
+  x
+}
+
+jdat20ttt <- jdat20tt %>% group_by(tag) %>% group_modify(~tracknum1(.x)) %>% ungroup()
+
+head(jdat20ttt)
+
+j20 <- jdat20ttt %>% mutate(ID = paste(tag, track, sep = "_"))
+head(j20)
+
+interp_list_j20 <- j20 %>%
+  group_by(.data[[id_col]], .data[[track_col]]) %>%
+  group_map(~ interpolate_track(.x, dt_seconds = 40), .keep = TRUE)
+
+# Remove NULLs (tracks that couldn't be interpolated)
+interp_list_j20 <- keep(interp_list_j20, ~ !is.null(.x) && nrow(.x) > 0)
+
+interp_df_j20 <- bind_rows(interp_list_j20)
+interp_df_j20 <- interp_df_j20 %>% mutate(ID = paste(tag, track, sep = "_"))
+head(interp_df_j20)
+
+interp_df_j20 <- interp_df_j20 %>% arrange(ID, ts)
+interp_df_j20 <- interp_df_j20 %>% group_by(ID) %>% filter(n()>= 30) %>% ungroup() #track for at least 20 minutes
+# prepData: coordinate names are "x" and "y" in our frame
+hmm_data_j20 <- prepData(interp_df_j20, type = "UTM", coordNames = c("x", "y"))
+
+# moveHMM uses a column 'step' and 'angle' (radians) created by prepData
+# Remove rows with zero or NA step (stay/missing movement) because gamma requires positive steps
+hmm_data_j20 <- hmm_data_j20 %>% filter(!is.na(step) & step > 0) %>% filter(!is.na(angle))
+
+hmm_data_j20 <- hmm_data_j20 %>%
+  filter(is.finite(step), is.finite(angle), step > 0) %>%
+  mutate(
+    step = pmax(step, quantile(step, 0.01, na.rm = TRUE)),
+    step = pmin(step, quantile(step, 0.99, na.rm = TRUE))
+  )
+
+head(hmm_data_j20)
+
+summary(hmm_data_j20$step)
+summary(hmm_data_j20$angle)
+hist(hmm_data_j20$step, breaks = 20, freq = F, main = "Step lengths")
+curve(dgamma(x,0.6,rate=1), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(dgamma(x,1.75,rate=0.6), n=200, add=TRUE, col="cadetblue", lwd=4)
+#curve(dgamma(x,1.2,rate=0.02), n=200, add=TRUE, col="navyblue", lwd=4)
+hist(hmm_data_j20$angle, breaks = 30, freq = F, main = "Turn angles")
+curve(circular::dvonmises(x,pi,0.01), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(circular::dvonmises(x,0,6), n=200, add=TRUE, col="cadetblue", lwd=4)
+
+#4) fit HMMs!
+  #look at histograms and get numbers
+  sl_init_mean <- c(1.75/0.6, 0.6/1)
+  sl_init_sd <- c(sqrt(1.75)/0.6, sqrt(0.6)/1)
+  ta_init_mean <- c(0, pi)
+  ta_init_con <- c(6, 0.01)
+  
+  jmod <- fitHMM(data = hmm_data_j20,
+                nbStates = 2,
+                stepPar0 = c(sl_init_mean, sl_init_sd),
+                anglePar0 = c(ta_init_mean, ta_init_con),
+                formula = ~1)
+  unique(hmm_data_j20$ID)
+  jmod
+  plot(jmod)
+  
+#Take out bad tracks
+  
+hmm_data_j20_2 <- hmm_data_j20 %>% dplyr::filter(!ID %in% c('10483_100','10483_105','10483_20','10483_21','10483_26','10483_27','10483_41',
+                                                            '10483_5','10483_53','10483_62','10483_79','10483_8','10483_80','10483_83','10483_88',
+                                                            '10483_90','10486_17','10486_3','10486_8','10487_12','10487_15','10487_4','10487_40','10487_5'))
+
+summary(hmm_data_j20_2$step)
+summary(hmm_data_j20_2$angle)
+hist(hmm_data_j20_2$step, breaks = 20, freq = F, main = "Step lengths")
+curve(dgamma(x,0.6,rate=1), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(dgamma(x,1.75,rate=0.6), n=200, add=TRUE, col="cadetblue", lwd=4)
+#curve(dgamma(x,1.2,rate=0.02), n=200, add=TRUE, col="navyblue", lwd=4)
+hist(hmm_data_j20_2$angle, breaks = 30, freq = F, main = "Turn angles")
+curve(circular::dvonmises(x,pi,0.01), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(circular::dvonmises(x,0,6), n=200, add=TRUE, col="cadetblue", lwd=4)
+
+sl_init_mean <- c(1.75/0.6, 0.6/1)
+sl_init_sd <- c(sqrt(1.75)/0.6, sqrt(0.6)/1)
+ta_init_mean <- c(0, pi)
+ta_init_con <- c(6, 0.01)
+
+jmod2 <- fitHMM(data = hmm_data_j20_2,
+               nbStates = 2,
+               stepPar0 = c(sl_init_mean, sl_init_sd),
+               anglePar0 = c(ta_init_mean, ta_init_con),
+               formula = ~1)
+
+jmod2
+plot(jmod2)
+
+jstates <- viterbi(jmod2)
+
+data.frame(val = rle(states)$values, n = rle(states)$lengths) %>%
+  ggplot(aes(val %>% factor, n)) + geom_violin()
+mod %>% plotPR()
+
+
+
+# viterbi returns vector aligned to rows of the data in best_fit$data
+jstate_20 <- jmod2$data %>%
+  mutate(state = jstates)
+
+# Convert angle to degrees for interpretability (angles are in radians)
+jstate_20 <- jstate_20 %>%
+  mutate(angle_deg = angle * 180 / pi,
+         abs_angle_deg = abs(angle_deg))
+
+#5a) average metrics per state
+jstate_summary_20 <- jstate_20 %>%
+  group_by(state) %>%
+  summarize(
+    mean_step_m = mean(step, na.rm = TRUE),
+    sd_step_m = sd(step, na.rm = TRUE),
+    mean_abs_turn_deg = mean(abs_angle_deg, na.rm = TRUE),
+    n_positions = n()
+  ) %>%
+  arrange(state)
+
+#5b) average number of positions per track assigned to each state
+# here 'burst' is the original track id; we compute, per burst, counts per state, then average across bursts
+jpositions_per_track_20 <- jstate_20 %>%
+  group_by(ID, state) %>%
+  summarize(n_pos = n(), .groups = "drop")
+
+javg_positions_per_track_20 <- jpositions_per_track_20 %>%
+  group_by(state) %>%
+  summarize(mean_positions_per_track = mean(n_pos, na.rm = TRUE),
+            median_positions_per_track = median(n_pos, na.rm = TRUE),
+            n_track = n())
+
+# Combine summaries
+jstate_metrics_20 <- left_join(jstate_summary_20, javg_positions_per_track_20, by = "state")
+
+#6) save results, print summaries
+
+# add ID, burst, ts, x, y, step, angle, state to output CSV
+output_jdf <- jstate_20 %>%
+  dplyr::select(ID, track, tag, ts, x, y, step, angle, angle_deg, state)
+
+write_csv(output_jdf, "Results/interpolated_hmm_states_Johnson_20.csv")
