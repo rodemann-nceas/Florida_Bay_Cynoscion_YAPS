@@ -82,7 +82,7 @@ jchi$p.value
 #Rankin first
 rcoord <- as.data.frame(cbind(rdate$x, rdate$y))
 rcoord_sf <- st_as_sf(rcoord, coords = c("V1", "V2"), crs = st_crs(rmap))
-
+?st_crs
 library(furrr)
 plan(multisession)  # Use multisession to run on multiple cores
 library(purrr)
@@ -134,7 +134,8 @@ metr1 <- mettry %>% pivot_wider(names_from = metric, values_from = value) %>% dp
 names(metr1)
 
 rankd <- metr1 %>% dplyr::select(c(division, ed, pd, pland, shape_mn)) %>% bind_cols(rdate)
-write.csv(rankd, file = 'Results/Rankin_full_hmm.csv')
+rankdat <- rankd %>% as.data.frame %>% dplyr::select(-geometry)
+write.csv(rankdat, file = 'Results/Rankin_full_hmm.csv')
 #rankd is the Rankin dataset to run models on
 
 #now Johnson
@@ -191,9 +192,10 @@ metj1 <- mettryj %>% pivot_wider(names_from = metric, values_from = value) %>% d
 names(metj1)
 
 johnd <- metj1 %>% dplyr::select(c(division, ed, pd, pland, shape_mn)) %>% bind_cols(jdate)
-write.csv(johnd, file = 'Results/Johnson_full_hmm.csv')
+johndat <- johnd %>% as.data.frame() %>% dplyr::select(-geometry)
+write.csv(johndat, file = 'Results/Johnson_full_hmm.csv')
 
-#Let's try some modelling!
+#Let's try some modelling! - none are significant before RF
 
 #Rankin
 rankd2 <- rankd %>% mutate(state_int = if_else(state == '2',1,0)) %>% drop_na()
@@ -223,3 +225,334 @@ johnmodgam <- gam(state_int ~ class + s(pland) + s(pd) + s(ed) + s(shape_mn) + s
 summary(johnmodgam)
 check_model(johnmodgam)
 performance(johnmodgam)
+
+#GAMMs do not have a great outcome. GLMMs are not working. I am going to try RF and see. It could be that there is no relationship
+#do it for both, Rankin is first
+rankd <- read_csv('Results/Rankin_full_hmm.csv')
+johnd <- read_csv('Results/Johnson_full_hmm.csv')
+rankd$state <- as.factor(rankd$state)
+rankd$class <- as.factor(rankd$class)
+johnd$state <- as.factor(johnd$state)
+johnd$class <- as.factor(johnd$class)
+
+#randomly select 70% of state 1 and state 2 for training
+head(rankd)
+rankd$ID <- 1:nrow(rankd)
+set.seed(1919)
+rsfr1 <- rankd %>% dplyr::filter(state == '1') %>% slice_sample(prop = 0.7)
+rsfr2 <- rankd %>% dplyr::filter(state == '2') %>% slice_sample(prop = 0.7)
+
+rsf.train <- rbind(rsfr1,rsfr2)
+rsf.test <- rankd[!(rankd$ID %in%rsf.train$ID), ] 
+
+#take out ID column
+rsf.testr <- rsf.test %>% as.data.frame %>% dplyr::select(c(division, ed, pd, pland, shape_mn, state, class)) %>% drop_na() 
+rsf.trainr <- rsf.train %>% as.data.frame %>% dplyr::select(c(division, ed, pd, pland, shape_mn, state, class)) %>% drop_na()
+
+
+# Set tasks for training and test datasets.
+task_trout.train <- as_task_classif(
+  rsf.trainr, target = "state", positive = '2',
+)
+str(task_trout.train)
+
+
+task_trout.test <- as_task_classif(
+  x = rsf.testr, target = "state",
+  positive = "2"
+)
+
+# Make learner.
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(rsf.trainr) - 1),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1, 10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+rm(instance)
+instance = mlr3tuning::ti(
+  task = task_trout.train,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+#finally! We can train our model with the train function
+learner$train(task_trout.train)
+
+#let's quickly look at the model
+learner$model
+
+#Accuracy of model - first on training data, then testing data
+measures <- msrs(c('classif.acc'))
+
+pred_train <- learner$predict(task_trout.train)
+pred_train$confusion
+pred_train$score(measures)
+
+
+pred_test <- learner$predict(task_trout.test)
+pred_test$confusion
+pred_test$score(measures)
+
+#importance with iml package - this is looking at the most influencial predictors in the model
+x_trout <- rsf.trainr %>% dplyr::select(-state) 
+# Create "Predictor" object to interpret findings via the iml package.
+predictor_trout <- Predictor$new(learner, data = x_trout, y = rsf.trainr$state) 
+options(future.globals.maxSize = 1024 * 1024 * 1024) 
+imp_trout <- FeatureImp$new(predictor_trout, loss = "ce") # Calculate importance.
+x = c('darkgreen', 'forestgreen', 'green3', 'lightgreen', 'lightblue', 'blue3')
+p <- imp_trout$plot()
+
+# Remove all point layers
+p$layers <- Filter(function(layer) {
+  !inherits(layer$geom, c("GeomPoint", "GeomErrorbar", "GeomErrorbarh", 'GeomSegment'))
+}, p$layers)
+
+# Add your clean bars
+p +
+  geom_bar(stat = "identity", fill = x) +
+  theme_classic()
+
+#ed is the best predictor, so let's look individually
+effect_ed <- FeatureEffect$new(predictor_trout, feature = c('ed'), method = 'pdp')
+beep(1)
+effect_ed$plot()
+effect_ed
+p_res <- effect_ed$results
+p_res <- p_res %>% filter(.class == 2)
+
+ggplot(p_res, aes(x = ed, y = .value))+
+  geom_smooth(color = 'darkgreen', size = 2) +
+  #geom_ribbon(aes(ymin = mean-sd, ymax = mean+sd), alpha = .2)+
+  labs(x = "Edge Density",
+       y = 'Probability of detection')+
+  theme_classic()
+
+#not super ecologically significant. Let's look at shape_mn
+effect_shape <- FeatureEffect$new(predictor_trout, feature = c('shape_mn'), method = 'pdp')
+effect_shape$plot()
+
+
+sh_res <- effect_shape$results
+sh_res <- sh_res %>% filter(.class == 2)
+
+ggplot(sh_res, aes(x = shape_mn, y = .value))+
+  geom_smooth(color = 'green3', size = 2) +
+  #geom_ribbon(aes(ymin = mean-sd, ymax = mean+sd), alpha = .2)+
+  labs(x = "Mean Shape",
+       y = 'Probability of detection')+
+  theme_classic()
+
+#again, not great. Lastly, pland
+effect_pland <- FeatureEffect$new(predictor_trout, feature = c('pland'), method = 'pdp')
+effect_pland$plot()
+
+
+pl_res <- effect_pland$results
+pl_res <- pl_res %>% filter(.class == 2)
+
+ggplot(pl_res, aes(x = pland, y = .value))+
+  geom_smooth(color = 'green3', size = 2) +
+  #geom_ribbon(aes(ymin = mean-sd, ymax = mean+sd), alpha = .2)+
+  labs(x = "Percentage of Landscape",
+       y = 'Probability of detection')+
+  theme_classic()
+
+#not great. So Rankin HMMs don't tell us anything about behavior vs. background habitat
+#johnson
+#randomly select 70% of state 1 and state 2 for training
+head(johnd)
+johnd$ID <- 1:nrow(johnd)
+set.seed(1919)
+rsfj1 <- johnd %>% dplyr::filter(state == '1') %>% slice_sample(prop = 0.7)
+rsfj2 <- johnd %>% dplyr::filter(state == '2') %>% slice_sample(prop = 0.7)
+
+rsf.train <- rbind(rsfj1,rsfj2)
+rsf.test <- johnd[!(johnd$ID %in%rsf.train$ID), ] 
+
+#take out ID column
+rsf.testj <- rsf.test %>% as.data.frame %>% dplyr::select(c(division, ed, pd, pland, shape_mn, state, class)) %>% drop_na() 
+rsf.trainj <- rsf.train %>% as.data.frame %>% dplyr::select(c(division, ed, pd, pland, shape_mn, state, class)) %>% drop_na()
+
+
+# Set tasks for training and test datasets.
+task_trout.train <- as_task_classif(
+  rsf.trainj, target = "state", positive = '2',
+)
+str(task_trout.train)
+
+
+task_trout.test <- as_task_classif(
+  x = rsf.testj, target = "state",
+  positive = "2"
+)
+
+# Make learner.
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(rsf.trainr) - 1),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1, 10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+rm(instance)
+instance = mlr3tuning::ti(
+  task = task_trout.train,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+#finally! We can train our model with the train function
+learner$train(task_trout.train)
+
+#let's quickly look at the model
+learner$model
+
+#Accuracy of model - first on training data, then testing data
+measures <- msrs(c('classif.acc'))
+
+pred_train <- learner$predict(task_trout.train)
+pred_train$confusion
+pred_train$score(measures)
+
+
+pred_test <- learner$predict(task_trout.test)
+pred_test$confusion
+pred_test$score(measures)
+
+#importance with iml package - this is looking at the most influencial predictors in the model
+x_trout <- rsf.trainj %>% dplyr::select(-state) 
+# Create "Predictor" object to interpret findings via the iml package.
+predictor_trout <- Predictor$new(learner, data = x_trout, y = rsf.trainj$state) 
+options(future.globals.maxSize = 1024 * 1024 * 1024) 
+imp_trout <- FeatureImp$new(predictor_trout, loss = "ce") # Calculate importance.
+x = c('darkgreen', 'forestgreen', 'green3', 'lightgreen', 'lightblue', 'blue3')
+p <- imp_trout$plot()
+
+# Remove all point layers
+p$layers <- Filter(function(layer) {
+  !inherits(layer$geom, c("GeomPoint", "GeomErrorbar", "GeomErrorbarh", 'GeomSegment'))
+}, p$layers)
+
+# Add your clean bars
+p +
+  geom_bar(stat = "identity", fill = x) +
+  theme_classic()
+
+#shape most important
+effect_shape <- FeatureEffect$new(predictor_trout, feature = c('shape_mn'), method = 'pdp')
+effect_shape$plot()
+
+
+sh_res <- effect_shape$results
+sh_res <- sh_res %>% filter(.class == 2)
+
+ggplot(sh_res, aes(x = shape_mn, y = .value))+
+  geom_smooth(color = 'green3', size = 2) +
+  #geom_ribbon(aes(ymin = mean-sd, ymax = mean+sd), alpha = .2)+
+  labs(x = "Mean Shape",
+       y = 'Probability of detection')+
+  theme_classic()
+
+#still not great. Let's try second important factor: ed
+effect_ed <- FeatureEffect$new(predictor_trout, feature = c('ed'), method = 'pdp')
+beep(1)
+effect_ed$plot()
+effect_ed
+p_res <- effect_ed$results
+p_res <- p_res %>% filter(.class == 2)
+
+ggplot(p_res, aes(x = ed, y = .value))+
+  geom_smooth(color = 'darkgreen', size = 2) +
+  #geom_ribbon(aes(ymin = mean-sd, ymax = mean+sd), alpha = .2)+
+  labs(x = "Edge Density",
+       y = 'Probability of detection')+
+  theme_classic()
+ #looks decent. Let's try a grouping to make sure this is real
+johndj <- johnd %>% as.data.frame %>% dplyr::select(c(division, ed, pd, pland, shape_mn, state, class,tag)) %>% drop_na() 
+rsf.testjg <- rsf.test %>% as.data.frame %>% dplyr::select(c(division, ed, pd, pland, shape_mn, state, class,tag)) %>% drop_na() 
+rsf.trainjg <- rsf.train %>% as.data.frame %>% dplyr::select(c(division, ed, pd, pland, shape_mn, state, class,tag)) %>% drop_na()
+rsf.trainjg$tag <- as.factor(rsf.trainjg$tag)
+rsf.testjg$tag <- as.factor(rsf.testjg$tag)
+task <- TaskClassif$new(
+  id = "behavior_rf",
+  backend =johndj,
+  target = "state",
+  positive = "2" # if your binary response is coded 0/1
+)
+
+set.seed(1919)  # for reproducibility
+
+# Get unique tags
+johndj$tag <- as.factor(johndj$tag)
+unique_tags <- unique(johndj$tag)
+
+# Assign each unique tag to one of 5 folds
+folds <- sample(rep(1:5, length.out = length(unique_tags)))
+
+# Map fold assignment back to all rows in your data
+fold_ids <- setNames(folds, unique_tags)
+johndj$fold <- fold_ids[johndj$tag]
+
+resampling <- rsmp("custom")
+
+resampling$instantiate(
+  task,
+  train_sets = lapply(1:5, function(i) which(johndj$fold != i)),
+  test_sets  = lapply(1:5, function(i) which(johndj$fold == i))
+)
+
+learner <-lrn(
+  "classif.ranger",
+  predict_type = "prob",
+  mtry  = to_tune(1, ncol(johndj) - 2),
+  sample.fraction = to_tune(0.2, 0.9),
+  min.node.size = to_tune(p_int(1, 10)),
+  importance = 'impurity'
+)
+
+#tune hyperparameters
+rm(instance)
+instance = mlr3tuning::ti(
+  task = task,
+  learner = learner,
+  resampling = rsmp("cv", folds = 5),
+  measures = msr("classif.ce"),
+  terminator = trm("none")
+)
+
+tuner = mlr3tuning::tnr("grid_search", resolution = 5, batch_size = 5)
+tuner$optimize(instance) # Takes ~ 4 minutes on my relatively fast computer
+
+#store tuned hyperparameters in learner
+learner$param_set$values <- instance$result_learner_param_vals
+
+rr <- resample(task, learner, resampling, store_models = TRUE)
+
+
+acc_blocked <- rr$aggregate(msr("classif.acc"))
+acc_blocked
+#56.6% accuracy. Not good, shows there is autocorrelation. I don't think we should present these results

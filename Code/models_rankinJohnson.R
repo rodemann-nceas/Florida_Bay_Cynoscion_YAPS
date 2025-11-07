@@ -910,7 +910,7 @@ rsf_dat <- rbind(data2, rand_dat2)
 set.seed(19)
 
 write.csv(file = 'rsf_John.csv', rsf_dat)
-
+rsf_dat <- read.csv('Data/rsf_John.csv')
 set.seed(19)
 
 rsf_dat$pa <- as.factor(rsf_dat$pa)
@@ -925,8 +925,8 @@ RSF_ar.test <- rsf_dat[!(rsf_dat$plot_id %in% RSF_ar.train$plot_id), ]
 head(RSF_ar.test)
 
 #take out ID column
-RSF_ar.test <- RSF_ar.test %>% dplyr::select(-plot_id) %>% drop_na()
-RSF_ar.train <- RSF_ar.train %>% dplyr::select(-plot_id) %>% drop_na()
+RSF_ar.test <- RSF_ar.test %>% dplyr::select(-c(plot_id,X)) %>% drop_na()
+RSF_ar.train <- RSF_ar.train %>% dplyr::select(-c(plot_id,X)) %>% drop_na()
 
 
 # Set tasks for training and test datasets.
@@ -945,14 +945,14 @@ task_trout.test <- as_task_classif(
 learner <-lrn(
   "classif.ranger",
   predict_type = "prob",
-  mtry  = to_tune(1, ncol(RSF_ar.train) - 4),
+  mtry  = to_tune(1, ncol(RSF_ar.train) - 1),
   sample.fraction = to_tune(0.2, 0.9),
-  min.node.size = to_tune(1,10),
+  min.node.size = to_tune(p_int(1, 10)),
   importance = 'impurity'
 )
 
 #tune hyperparameters
-instance = ti(
+instance = mlr3tuning::ti(
   task = task_trout.train,
   learner = learner,
   resampling = rsmp("cv", folds = 5),
