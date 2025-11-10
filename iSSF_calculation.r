@@ -12,7 +12,7 @@ library(ggeffects)
 rdat <- read.csv('Results/Rankin_full_hmm.csv')
 rmap <- rast('Data/Rankin_map.tif')
 str(rdat)
-
+plot(rmap)
 ?make_track
 
 fish_trackr <- rdat %>%
@@ -193,7 +193,7 @@ print(plot_sl)
 
 #habitat selection
 #' Calculates and plots the difference in log-RSS (State 2 - State 1) for a given habitat variable
-plot_interaction_effect <- function(var_name, title_name) {
+plot_interaction_effect <- function(var_name, title_name, sdd, meand) {
   
   N_POINTS_HAB <- 2 * N_POINTS_Z # 200 points total
   
@@ -246,10 +246,10 @@ plot_interaction_effect <- function(var_name, title_name) {
     # Calculate 95% CI bounds (Z-score 1.96 for 95%)
     lwr_diff = (df_state2$log_rss - df_state1$log_rss) - 1.96 * se_diff,
     upr_diff = (df_state2$log_rss - df_state1$log_rss) + 1.96 * se_diff
-  )
+  ) %>% mutate(rawdat = z_score*sdd+meand)
   
   # --- 5. Plot the Difference with CI ---
-  ggplot(df_diff, aes(x = z_score, y = log_rss_diff)) + 
+  ggplot(df_diff, aes(x = rawdat, y = log_rss_diff)) + 
     geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
     geom_line(linewidth = 1.2, color = "darkgreen") +
     # Add the confidence interval ribbon
@@ -257,8 +257,7 @@ plot_interaction_effect <- function(var_name, title_name) {
     theme_bw() +
     labs(
       title = paste("State-Dependent Effect: Difference in", title_name, "Selection"),
-      subtitle = "log-RSS(State 2) - log-RSS(State 1). CI calculated via SE propagation.",
-      x = paste0(title_name, " (Standardized Z-Score)"),
+      x = title_name,
       y = "log-RSS Difference (State 2 - State 1)"
     )
 }
@@ -268,15 +267,23 @@ plot_interaction_effect <- function(var_name, title_name) {
 # -----------------------------------------------------------------
 
 #PLAND
-plot_pland_interaction <- plot_interaction_effect("pland_z", "PLAND")
+str(strue)
+strue1 <- strue %>% drop_na()
+mean(strue1$pland)
+sd(strue1$pland)
+plot_pland_interaction <- plot_interaction_effect("pland_z", "PLAND", 23.4859, 70.31617)
 print(plot_pland_interaction)
 
 #PD
-plot_pd_interaction <- plot_interaction_effect("pd_z", "Patch Density")
+mean(strue1$pd)
+sd(strue1$pd)
+plot_pd_interaction <- plot_interaction_effect("pd_z", "Patch Density", 9548.752,16566.96)
 print(plot_pd_interaction)
 
 #Shape_mn
-plot_shape_interaction <- plot_interaction_effect("shape_mn_z", "Mean Shape")
+mean(strue1$shape_mn)
+sd(strue1$shape_mn)
+plot_shape_interaction <- plot_interaction_effect("shape_mn_z", "Mean Shape",0.3579983,1.545075)
 print(plot_shape_interaction)
 
 #amazing!!!! Let's save these plots and run for Johnson

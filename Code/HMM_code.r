@@ -35,7 +35,7 @@ dat <- dat %>%
   mutate(ts = as.POSIXct(ts,
                          format = "%Y-%m-%d %H:%M:%OS",
                          tz = "UTC"))
-
+str(dat)
 #2) Interpolate to regular 3-minute intervals by individual and track
 interpolate_track <- function(df_group, dt_seconds = 180) {
   # df_group must contain columns: ts, x, y, plus id/track identifiers
@@ -81,6 +81,8 @@ dat %>% mutate(ID = paste(tag, track, sep = "_")) %>% dplyr::filter(ID == '34510
   ggplot()+
   geom_point(aes(x = x, y = y))+
   theme_classic()
+d <- dat %>% mutate(ID = paste(tag, track, sep = "_")) %>% dplyr::filter(ID == '34510_56') %>% 
+  mutate(tot = as.numeric(max(ts))-as.numeric(min(ts)))
 ##First look at YAPS tags (20-40 second random delay)
 # Apply interpolation grouped by ID and track per time delay of tag
 interp_list_20 <- dat %>%
@@ -237,8 +239,9 @@ mod3 <- fitHMM(data = hmm_data_20_3,
                formula = ~1)
 
 mod3
-plot(mod3)
-
+statecol <- c('lightblue', 'purple1')
+plot(mod3, col = statecol)
+plot(rmap)
 
 
 
